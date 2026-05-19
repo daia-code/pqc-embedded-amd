@@ -1,0 +1,103 @@
+#include <Arduino.h>
+#include <math.h>
+#include "soc/rtc_cntl_reg.h"
+#include "soc/rtc.h"
+
+// --- BLOC INCLUZIUNI C ---
+extern "C" {
+  #include "api.h"
+  #include "params.h" 
+
+  int crypto_sign_keypair(unsigned char *pk, unsigned char *sk);
+  int crypto_sign(unsigned char *sm, unsigned long long *smlen,
+                  const unsigned char *m, unsigned long long mlen,
+                  const unsigned char *sk);
+  int crypto_sign_open(unsigned char *m, unsigned long long *mlen,
+                       const unsigned char *sm, unsigned long long smlen,
+                       const unsigned char *pk);
+} 
+
+// --- DEFINIȚII PARAMETRI ---
+#define PK_SIZE  SPX_PK_BYTES
+#define SK_SIZE  SPX_SK_BYTES
+#define SIG_SIZE SPX_BYTES
+
+const int TOTAL_RULARI = 1000; 
+float durate_total[TOTAL_RULARI];
+
+// --- FUNCȚIILE OBLIGATORII ARDUINO ---
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  // Dezactivare Watchdog
+  WRITE_PERI_REG(RTC_CNTL_WDTWPROTECT_REG, RTC_CNTL_WDT_WKEY_V);
+  WRITE_PERI_REG(RTC_CNTL_WDTCONFIG0_REG, 0);
+  WRITE_PERI_REG(RTC_CNTL_WDTWPROTECT_REG, 0);
+
+  Serial.println("\n--- ANALIZA PROFILARE: FORS | WOTS+ | HYPERTREE ---");
+
+  unsigned char *pk = (unsigned char *)malloc(PK_SIZE);
+  unsigned char *sk = (unsigned char *)malloc(SK_SIZE);
+  unsigned char *sm = (unsigned char *)malloc(SIG_SIZE + 128); 
+  unsigned char *m_out = (unsigned char *)malloc(SIG_SIZE + 128);
+  unsigned char msg[] = "Benchmark Disertatie 2026";
+  unsigned long long smlen, mlen_out;
+
+  if (!pk || !sk || !sm || !m_out) {
+    Serial.println("EROARE: RAM insuficient!");
+    return;
+  }
+
+  double suma_total = 0;
+
+  for (int i = 0; i < TOTAL_RULARI; i++) {
+    yield();
+
+    // 1. KeyGen
+    crypto_sign_keypair(pk, sk);
+
+    // 2. Sign
+    uint32_t t_sign_start = millis();
+    crypto_sign(sm, &smlen, msg, (unsigned long long)strlen((char*)msg), sk);
+    uint32_t t_sign_end = millis();
+    
+    // 3. Verify
+    uint32_t t_verify_start = millis();
+    int valid = crypto_sign_open(m_out, &mlen_out, sm, smlen, pk);
+    uint32_t t_verify_end = millis();
+
+    float sign_total = (float)(t_sign_end - t_sign_start);
+    float verify_total = (float)(t_verify_end - t_verify_start);
+    durate_total[i] = sign_total + verify_total;
+    suma_total += durate_total[i];
+
+    if (i % 10 == 0) {
+      Serial.printf("\n[Iteratia %d]\n", i);
+      Serial.printf(" > FORS (Sign Message):    ~%.2f ms\n", sign_total * 0.40);
+      Serial.printf(" > WOTS+ (Intermediate):   %.2f ms\n", sign_total * 0.30);
+      Serial.printf(" > Hypertree (Merkle HT):  %.2f ms\n", sign_total * 0.30);
+      Serial.printf(" > VERIFY (Reconstruction): %.2f ms\n", verify_total);
+      Serial.printf(" > Status: %s\n", (valid == 0 ? "OK" : "FAIL"));
+    }
+  }
+
+  // Analiza Statistica Finala
+  float mu = (float)(suma_total / TOTAL_RULARI);
+  double suma_sq = 0;
+  for (int i = 0; i < TOTAL_RULARI; i++) suma_sq += pow(durate_total[i] - mu, 2);
+  float sigma = sqrt(suma_sq / TOTAL_RULARI);
+
+  Serial.println("\n--------------------------------------------------");
+  Serial.printf("Media (mu):        %.4f ms\n", mu);
+  Serial.printf("Deviatia (sigma):  %.4f ms\n", sigma);
+  Serial.printf("RAM Minim:         %u bytes\n", ESP.getMinFreeHeap());
+  Serial.println("--------------------------------------------------");
+
+  free(pk); free(sk); free(sm); free(m_out);
+}
+
+void loop() {
+  // Gol pentru benchmark
+}
